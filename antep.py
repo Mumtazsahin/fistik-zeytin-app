@@ -13,15 +13,16 @@ import shutil
 
 MODEL_AĞIRLIKLARI_YOLU = "best.pt"
 
-# Sizin Google Drive ID'niz: 1sry766_MjFuPuwneRn8Zdzpyy-mIlO-O
-DOWNLOAD_URL = "https://drive.google.com/uc?export=download&id=1sry766_MjFuPuwneRn8Zdzpyy-mIlO-O" 
+# SİZİN DOĞRUDAN İNDİRME LİNKİNİZ (Büyük dosya onay parametresi eklendi)
+# Linki tarayıcınızda kontrol edin, indirme başlamalıdır.
+DOWNLOAD_URL = "https://drive.google.com/uc?export=download&confirm=t&id=1sry766_MjFuPuwneRn8Zdzpyy-mIlO-O" 
 
-# Modelin güven eşiği
+# Modelin güven eşiği (Hocanıza %45 güvenle tespit yaptığınızı gösterir)
 CONFIDENCE_THRESHOLD = 0.45 
 
 
 # =========================================================================
-# 2. MODELİ İNDİRME VE YÜKLEME FONKSİYONLARI
+# 2. MODELİ İNDİRME VE YÜKLEME FONKSİYONLARI (Sadece Bir Kez Çalışır)
 # =========================================================================
 
 @st.cache_resource 
@@ -36,7 +37,8 @@ def load_model_from_disk():
             response = requests.get(DOWNLOAD_URL, stream=True)
             response.raise_for_status() # Hata kontrolü
         except requests.exceptions.HTTPError as e:
-            st.error("❌ Model indirme hatası. Lütfen Drive paylaşım linkini kontrol edin.")
+            # Bu hata gelirse, ya link yanlış ya da Drive paylaşımında sorun var demektir.
+            st.error("❌ Model indirme hatası. Lütfen Drive paylaşım linkini kontrol edin ve herkese açık olduğundan emin olun.")
             st.exception(e)
             return None
         
@@ -88,13 +90,14 @@ def run_local_inference(image_bytes, model, confidence_threshold):
                 "confidence": conf,
             })
             
-    os.remove(temp_file_path)
+    # os.remove(temp_file_path) # Geçici dosyayı silme
     return {"predictions": predictions}
 
 
 @st.cache_data
 def get_disease_info(class_name):
-    # Bu kısım önceki kodunuzla aynıdır
+    """Hastalık adı verilen bilgi kartını ve önerileri döndürür."""
+    
     info = {
         "PHYPSO": ("Yaprak Lekesi (Phyllosticta)", "Yaprakta koyu dairesel noktalarla karakterizedir. **Öneri:** Hızlı mantar ilacı uygulaması ve iyi hava sirkülasyonu sağlayın."),
         "FORD FO": ("Fusarium Odaklı Hastalık", "Solma ve kahverengileşme görülebilir. **Öneri:** Hastalıklı bitki parçalarını uzaklaştırın."),
@@ -159,7 +162,6 @@ if uploaded_file is not None:
                 
                 try:
                     # YEREL MODEL ÇAĞRISI
-                    # API'den gelen kod yerine yerel model kullanılıyor
                     results = run_local_inference(image_bytes, LOCAL_MODEL, CONFIDENCE_THRESHOLD)
                     
                     if "predictions" in results:
