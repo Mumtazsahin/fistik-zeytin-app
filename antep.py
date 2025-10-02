@@ -1,80 +1,100 @@
 import streamlit as st
 import requests
 import io
+import os
 from PIL import Image
+from ultralytics import YOLO # Modelinizi yerel olarak çalıştırmak için gerekli
+import zipfile
+import shutil
 
 # =========================================================================
-# 1. API Bilgileri ve Temel Ayarlar (Kendi Bilgilerinizle GÜNCELLEYİN)
+# 1. GİTHUB LİMİTİNİ AŞMA VE MODEL YOLU (API KULLANILMIYOR)
 # =========================================================================
-# NOT: API HATASI çözülene kadar bu kodu kullanmayın. Direkt Drive indirme çözümüne geçin.
-API_KEY = "rqSHwZoYtdlYlnMctixU" 
-# Model Kimliği
-FISTIK_MODEL_ID = "fistik-ojqcr/3"  
+
+MODEL_AĞIRLIKLARI_YOLU = "best.pt"
+
+# Sizin Google Drive ID'niz: 1sry766_MjFuPuwneRn8Zdzpyy-mIlO-O
+DOWNLOAD_URL = "https://drive.google.com/uc?export=download&id=1sry766_MjFuPuwneRn8Zdzpyy-mIlO-O" 
+
 # Modelin güven eşiği
 CONFIDENCE_THRESHOLD = 0.45 
 
-# =========================================================================
-# 2. Sayfa Yapılandırması ve Karşılama Ekranı
-# =========================================================================
-st.set_page_config(
-    page_title="Antep Fıstığı Hastalık Tespit Sistemi",
-    layout="wide",
-    initial_sidebar_state="expanded" 
-)
-
-# Yan Menü (Sidebar)
-st.sidebar.markdown("# 🧠 AI Model Bilgisi")
-st.sidebar.markdown("Bu sistem, Roboflow'da eğitilmiş **YOLOv8** tabanlı Nesne Algılama teknolojisiyle çalışır.")
-st.sidebar.markdown(f"**Aktif Model Sürümü:** `{FISTIK_MODEL_ID}`")
-st.sidebar.markdown(f"**Minimum Güven Eşiği:** **%{CONFIDENCE_THRESHOLD*100:.0f}**")
-st.sidebar.markdown("---")
-st.sidebar.markdown("© 2025 Mümtazşahin. Tüm hakları saklıdır.")
-
-
-# Ana Karşılama Başlığı (HTML ile ortalanmış ve vurgulanmış)
-st.markdown("""
-    <style>
-    .big-font {
-        font-size:36px !important;
-        font-weight: bold;
-        color: #008000;
-        text-align: center;
-    }
-    .medium-font {
-        font-size:20px !important;
-        color: #555555;
-        text-align: center;
-    }
-    </style>
-    <p class='big-font'>🌱 Yapay Zeka Destekli Fıstık Sağlığı Analizi 🥜</p>
-    <p class='medium-font'>Fıstık yapraklarındaki hastalık ve zararlıları anında, yüksek doğrulukla tespit edin.</p>
-""", unsafe_allow_html=True)
-st.markdown("---")
-
 
 # =========================================================================
-# 3. Yardımcı Fonksiyonlar ve API Bağlantısı
+# 2. MODELİ İNDİRME VE YÜKLEME FONKSİYONLARI
 # =========================================================================
 
-def get_inference_url(image_bytes):
-    """Görüntüyü Fıstık modeline gönderir ve tahminleri JSON olarak alır."""
+@st.cache_resource 
+def load_model_from_disk():
+    """Modelleri yerel olarak yükler, yoksa buluttan indirir."""
     
-    # Nesne Algılama API endpoint'i
-    url = f"https://detect.roboflow.com/{FISTIK_MODEL_ID}?api_key={API_KEY}"
+    if not os.path.exists(MODEL_AĞIRLIKLARI_YOLU):
+        st.sidebar.warning("Model dosyası bulunamadı, buluttan indiriliyor...")
+        
+        # 1. Dosyayı doğrudan indirme isteği gönder
+        try:
+            response = requests.get(DOWNLOAD_URL, stream=True)
+            response.raise_for_status() # Hata kontrolü
+        except requests.exceptions.HTTPError as e:
+            st.error("❌ Model indirme hatası. Lütfen Drive paylaşım linkini kontrol edin.")
+            st.exception(e)
+            return None
+        
+        # 2. İndirilen veriyi best.pt olarak kaydet
+        with open(MODEL_AĞIRLIKLARI_YOLU, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        st.sidebar.success("✅ Model Başarıyla İndirildi!")
+
+    # Modeli Ultralytics kütüphanesi ile yükle
+    try:
+        model = YOLO(MODEL_AĞIRLIKLARI_YOLU)
+        st.sidebar.success("Model Başarıyla Yüklendi ve Kullanıma Hazır.")
+        return model
+    except Exception as e:
+        st.error(f"❌ Model Yükleme Hatası: best.pt dosyasını kontrol edin. Hata: {e}")
+        return None
+
+# Uygulamanın başlangıcında modeli yükle
+LOCAL_MODEL = load_model_from_disk()
+
+# =========================================================================
+# 3. YARDIMCI VE TESPİT FONKSİYONLARI
+# =========================================================================
+
+def run_local_inference(image_bytes, model, confidence_threshold):
+    """Yerel model ağırlıklarını kullanarak tahmin yapar."""
     
-    response = requests.post(
-        url,
-        data=image_bytes,
-        headers={"Content-Type": "application/x-www-form-urlencoded"}
-    )
+    if model is None:
+        return {"predictions": []}
+
+    temp_file_path = "temp_image.jpg"
+    with open(temp_file_path, "wb") as f:
+        f.write(image_bytes)
     
-    response.raise_for_status() # HTTP hatalarını yakala
-    return response.json()
+    # YOLO predict fonksiyonu
+    results = model.predict(source=temp_file_path, conf=confidence_threshold, verbose=False)
+    
+    # Tahmin sonuçlarını işleyerek JSON benzeri bir yapıya dönüştürün
+    predictions = []
+    if len(results) > 0:
+        for box in results[0].boxes:
+            conf = box.conf.item()
+            cls = int(box.cls.item())
+            class_name = results[0].names[cls]
+            
+            predictions.append({
+                "class": class_name,
+                "confidence": conf,
+            })
+            
+    os.remove(temp_file_path)
+    return {"predictions": predictions}
+
 
 @st.cache_data
 def get_disease_info(class_name):
-    """Hastalık adı verilen bilgi kartını ve önerileri döndürür."""
-    
+    # Bu kısım önceki kodunuzla aynıdır
     info = {
         "PHYPSO": ("Yaprak Lekesi (Phyllosticta)", "Yaprakta koyu dairesel noktalarla karakterizedir. **Öneri:** Hızlı mantar ilacı uygulaması ve iyi hava sirkülasyonu sağlayın."),
         "FORD FO": ("Fusarium Odaklı Hastalık", "Solma ve kahverengileşme görülebilir. **Öneri:** Hastalıklı bitki parçalarını uzaklaştırın."),
@@ -88,31 +108,35 @@ def get_disease_info(class_name):
 
 
 # =========================================================================
-# 4. Streamlit Arayüzü ve Analiz Akışı
+# 4. Streamlit Arayüzü ve Analiz Akışı (API ÇAĞRISI KALDIRILDI)
 # =========================================================================
 
-col1, col2 = st.columns([1, 1.5]) # Alanları ayır
+st.set_page_config(page_title="Antep Fıstığı Hastalık Tespit Sistemi", layout="wide", initial_sidebar_state="expanded") 
 
+st.markdown("""
+    <style> .big-font { font-size:36px !important; font-weight: bold; color: #008000; text-align: center;}
+    .medium-font { font-size:20px !important; color: #555555; text-align: center; }
+    </style>
+    <p class='big-font'>🌱 Yapay Zeka Destekli Fıstık Sağlığı Analizi 🥜</p>
+    <p class='medium-font'>Fıstık yapraklarındaki hastalık ve zararlıları anında, yüksek doğrulukla tespit edin.</p>
+""", unsafe_allow_html=True)
+st.markdown("---")
+
+col1, col2 = st.columns([1, 1.5]) 
 uploaded_file = None
 
 with col1:
     st.markdown("### 1️⃣ Görüntü Yükleme")
     st.info("⚠️ **DİKKAT:** Sadece .jpg, .jpeg, .png uzantılı, tek bir fıstık yaprağı resmi yükleyin.")
-    uploaded_file = st.file_uploader(
-        "Lütfen analiz edilecek resmi seçin:", 
-        type=['jpg', 'jpeg', 'png']
-    )
+    uploaded_file = st.file_uploader("Lütfen analiz edilecek resmi seçin:", type=['jpg', 'jpeg', 'png'])
     
-    # Butona basılma durumunu kontrol et
     if uploaded_file is not None:
         if st.button("AI Analizini Başlat 🚀", help="Modelin hastalıkları tespit etmesini sağlar.", type="primary"):
             st.session_state['run_analysis'] = True
         else:
-            if 'run_analysis' not in st.session_state:
-                st.session_state['run_analysis'] = False
+            if 'run_analysis' not in st.session_state: st.session_state['run_analysis'] = False
     else:
-        if 'run_analysis' in st.session_state:
-            del st.session_state['run_analysis']
+        if 'run_analysis' in st.session_state: del st.session_state['run_analysis']
 
 
 if uploaded_file is not None:
@@ -125,43 +149,42 @@ if uploaded_file is not None:
 
     
     if st.session_state.get('run_analysis', False):
-        # Analiz başladı
-        with st.spinner('Model analizi gerçekleştiriliyor... Lütfen bekleyin.'):
-            st.markdown("---")
-            st.markdown("### 3️⃣ Tespit Sonuçları")
-            
-            try:
-                # API çağrısı
-                results = get_inference_url(image_bytes)
+        if LOCAL_MODEL is None:
+            st.error("Model yüklenemediği için analiz başlatılamadı. Lütfen Drive bağlantısını ve paylaşım ayarlarını kontrol edin.")
+        else:
+            # Analiz başladı
+            with st.spinner('Model analizi gerçekleştiriliyor... Lütfen bekleyin.'):
+                st.markdown("---")
+                st.markdown("### 3️⃣ Tespit Sonuçları")
                 
-                if "predictions" in results:
-                    # Sadece güven eşiğini geçen tahminleri al
-                    predictions_list = [p for p in results["predictions"] if p['confidence'] >= CONFIDENCE_THRESHOLD]
+                try:
+                    # YEREL MODEL ÇAĞRISI
+                    # API'den gelen kod yerine yerel model kullanılıyor
+                    results = run_local_inference(image_bytes, LOCAL_MODEL, CONFIDENCE_THRESHOLD)
                     
-                    if predictions_list:
-                        st.success("✅ Olası Hastalıklar Tespit Edildi!")
+                    if "predictions" in results:
+                        predictions_list = results["predictions"]
                         
-                        for prediction in predictions_list:
-                            confidence = prediction['confidence']
-                            class_name = prediction['class']
-                            info_title, info_detail = get_disease_info(class_name)
+                        if predictions_list:
+                            st.success("✅ Olası Hastalıklar Tespit Edildi!")
                             
-                            st.markdown(f"#### **{info_title}** ({class_name})")
-                            st.progress(confidence) # Görsel güven çubuğu
-                            
-                            st.markdown(f"**AI Güven Puanı:** **`%{confidence * 100:.2f}`**")
-                            st.markdown(f"**Açıklama:** {info_detail}")
-                            st.markdown("---") 
+                            for prediction in predictions_list:
+                                confidence = prediction['confidence']
+                                class_name = prediction['class']
+                                info_title, info_detail = get_disease_info(class_name)
+                                
+                                st.markdown(f"#### **{info_title}** ({class_name})")
+                                st.progress(confidence)
+                                st.markdown(f"**AI Güven Puanı:** **`%{confidence * 100:.2f}`**")
+                                st.markdown(f"**Açıklama:** {info_detail}")
+                                st.markdown("---") 
 
+                        else:
+                             st.info(f"Model, **%{CONFIDENCE_THRESHOLD*100:.0f} güvenin üzerinde** bir hastalık/zararlı tespit edemedi. Görünüşe göre yaprak sağlıklı olabilir!")
+                             st.balloons() 
                     else:
-                         st.info(f"Model, **%{CONFIDENCE_THRESHOLD*100:.0f} güvenin üzerinde** bir hastalık/zararlı tespit edemedi. Görünüşe göre yaprak sağlıklı olabilir!")
-                         st.balloons() 
-                else:
-                    st.info("Resimde belirgin bir hastalık/zararlı tespit edilemedi.")
+                        st.info("Resimde belirgin bir hastalık/zararlı tespit edilemedi.")
 
-            except requests.exceptions.HTTPError as e:
-                # API'den gelen HTTP hatası. Bu, anahtarın geçersiz olduğunu gösterir.
-                st.error(f"API Hatası (HTTP Error): Lütfen **yeni ve geçerli bir API Anahtarı** oluşturup koda yapıştırın.")
-            except Exception as e:
-                st.error("Analiz sırasında beklenmeyen bir hata oluştu.")
-                st.exception(e)
+                except Exception as e:
+                    st.error("Analiz sırasında beklenmeyen bir hata oluştu.")
+                    st.exception(e)
